@@ -7,8 +7,8 @@ import json
 import ssl
 from datetime import date, timedelta
 
-st.set_page_config(page_title="Radar — Boletos e Arrecadação", layout="wide")
-st.title("🏦 Radar de Licitações — Boletos e Arrecadação Municipal")
+st.set_page_config(page_title="Radar — Arrecadação Municipal", layout="wide")
+st.title("🏦 Radar de Licitações — Recolhimento de Tributos e Receitas Municipais")
 
 # ── SSL ───────────────────────────────────────────────────────────────────────
 _SSL = ssl.create_default_context()
@@ -16,30 +16,33 @@ _SSL.check_hostname = False
 _SSL.verify_mode = ssl.CERT_NONE
 
 # ── Palavras-chave especializadas ─────────────────────────────────────────────
-# Foco: emissão e liquidação de boletos para órgãos públicos
+# Foco: recolhimento de tributos e receitas públicas municipais via DAM/FEBRABAN
 PALAVRAS_CHAVE = [
-    # Boleto — core
-    "boleto", "boleto bancário", "emissão de boleto", "emissão de boletos",
-    "liquidação de boleto", "liquidação de boletos", "emissão e liquidação",
-    "boleto de cobrança", "boleto de arrecadação",
-    # Arrecadação
-    "arrecadação", "serviço de arrecadação", "serviços de arrecadação",
-    "agente arrecadador", "banco arrecadador", "arrecadação de receitas",
-    "gestão de arrecadação", "arrecadação tributária", "arrecadação municipal",
-    "receitas próprias", "convênio de arrecadação",
-    # Cobrança bancária
-    "cobrança bancária", "serviço de cobrança", "cobrança escritural",
-    "custódia de boletos", "registro de boletos", "banco cobrador",
-    # Guias e documentos de arrecadação
-    "guia de recolhimento", "guia de arrecadação", "guia de pagamento",
-    "DAM", "GRU", "TED arrecadação", "documento de arrecadação",
-    # Serviços bancários correlatos
-    "correspondente bancário", "compensação bancária",
-    "liquidação financeira", "conciliação bancária", "baixa bancária",
-    "banco pagador", "processamento de pagamentos",
-    # Tributos municipais — contexto dos boletos
-    "IPTU", "ISSQN", "taxa de serviços", "alvará",
-    "tributos municipais", "dívida ativa", "parcelamento de débitos",
+    # Termos centrais do serviço
+    "recolhimento de tributos",
+    "receitas públicas municipais",
+    "receitas municipais",
+    "receitas públicas",
+    "serviços bancários de recolhimento",
+    # DAM — Documento de Arrecadação Municipal
+    "DAM",
+    "documento de arrecadação municipal",
+    "documento de arrecadação",
+    # Padrão FEBRABAN — termo técnico que qualifica o serviço
+    "FEBRABAN",
+    "padrão FEBRABAN",
+    # Variações de objeto que descrevem o mesmo serviço
+    "recolhimento de receitas",
+    "arrecadação de tributos",
+    "arrecadação de receitas municipais",
+    "arrecadação municipal",
+    "agente arrecadador",
+    "banco arrecadador",
+    "convênio de arrecadação",
+    # Tributos municipais — frequentemente no objeto do edital
+    "IPTU", "ISSQN", "ISS", "ITBI",
+    "tributos municipais",
+    "dívida ativa municipal",
 ]
 
 # Modalidades — mantemos todas pois Inexigibilidade cobre contratos diretos
@@ -400,6 +403,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v73 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos especializados | "
-    "Boletos e Arrecadação Municipal"
+    f"v74 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
+    "DAM · FEBRABAN · Recolhimento de Tributos Municipais"
 )
