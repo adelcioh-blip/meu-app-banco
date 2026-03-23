@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import json
 import ssl
+import re
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Radar — Arrecadação Municipal", layout="wide")
@@ -77,11 +78,15 @@ CAMPOS_OBJETO = (
 )
 
 def filtrar(itens: list, termos: list[str]) -> list:
-    tl = [t.lower() for t in termos]
+    # \b = word boundary — garante que "DAM" não case com "DAMÁSIO", "dama", etc.
+    padroes = [
+        re.compile(r'\b' + re.escape(t) + r'\b', re.IGNORECASE)
+        for t in termos
+    ]
     return [
         i for i in itens
         if isinstance(i, dict) and any(
-            any(t in str(i.get(c, "")).lower() for t in tl)
+            any(p.search(str(i.get(c, ""))) for p in padroes)
             for c in CAMPOS_OBJETO
         )
     ]
@@ -390,6 +395,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v75 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
-    "DAM · FEBRABAN · Recolhimento de Tributos Municipais"
+    f"v76 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
+    "DAM · FEBRABAN · word boundary fix"
 )
