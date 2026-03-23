@@ -16,22 +16,41 @@ _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
 _SSL.verify_mode = ssl.CERT_NONE
 
-# ── Palavras-chave especializadas ─────────────────────────────────────────────
-# Foco: recolhimento de tributos e receitas públicas municipais via DAM/FEBRABAN
-PALAVRAS_CHAVE = [
-    # Extraídos diretamente do objeto de referência:
-    # "PRESTAÇÃO DE SERVIÇOS BANCÁRIOS DE RECOLHIMENTO DE TRIBUTOS E DEMAIS
-    #  RECEITAS PÚBLICAS MUNICIPAIS, ATRAVÉS DE DAM, EM PADRÃO FEBRABAN"
+# ── Lógica AND de termos — dois grupos com regras de co-ocorrência ────────────
+#
+# GRUPO A — âncoras de altíssima precisão (sozinhas já qualificam o edital)
+#   • "FEBRABAN"                    → padrão técnico exclusivo de boletos bancários
+#   • "documento de arrecadação municipal" → nome formal do DAM por extenso
+#
+# GRUPO B — termos contextuais (válidos apenas quando combinados entre si,
+#            nunca isolados, pois são semanticamente amplos)
+#   • "DAM"                         → sigla do doc. acima (risco isolado: alto)
+#   • "recolhimento de tributos"    → pode aparecer em editais de TI/consultoria
+#   • "receitas públicas municipais"→ pode aparecer em editais de software/ERP
+#   • "serviços bancários de arrecadação"
+#   • "serviços bancários de recolhimento"
+#   • "banco arrecadador"
+#
+# REGRA: edital passa se tiver ≥1 termo do GRUPO A
+#                           OU ≥2 termos do GRUPO B (co-ocorrência)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    "FEBRABAN",                          # qualificador técnico — altíssima precisão
-    "DAM",                               # Documento de Arrecadação Municipal
+GRUPO_A = [
+    "FEBRABAN",
     "documento de arrecadação municipal",
-    "recolhimento de tributos",          # frase exata do objeto
-    "receitas públicas municipais",      # frase exata do objeto
-    "serviços bancários de arrecadação", # variação direta
-    "serviços bancários de recolhimento",# variação direta
-    "banco arrecadador",                 # termo técnico do contrato
 ]
+
+GRUPO_B = [
+    "DAM",
+    "recolhimento de tributos",
+    "receitas públicas municipais",
+    "serviços bancários de arrecadação",
+    "serviços bancários de recolhimento",
+    "banco arrecadador",
+]
+
+# Lista unificada usada no expander do sidebar
+PALAVRAS_CHAVE = GRUPO_A + GRUPO_B
 
 # Modalidades — mantemos todas pois Inexigibilidade cobre contratos diretos
 # com bancos (ex: Caixa Econômica, Banco do Brasil como agente exclusivo)
@@ -77,19 +96,45 @@ CAMPOS_OBJETO = (
     "informacaoComplementar", "objetoContratacao",
 )
 
-def filtrar(itens: list, termos: list[str]) -> list:
-    # \b = word boundary — garante que "DAM" não case com "DAMÁSIO", "dama", etc.
-    padroes = [
+def _compilar(termos: list[str]) -> list:
+    """Compila lista de termos em padrões regex com word boundary."""
+    return [
         re.compile(r'\b' + re.escape(t) + r'\b', re.IGNORECASE)
         for t in termos
     ]
-    return [
-        i for i in itens
-        if isinstance(i, dict) and any(
-            any(p.search(str(i.get(c, ""))) for p in padroes)
-            for c in CAMPOS_OBJETO
-        )
-    ]
+
+_PADROES_A = _compilar(GRUPO_A)
+_PADROES_B = _compilar(GRUPO_B)
+
+
+def _texto_objeto(item: dict) -> str:
+    """Concatena todos os campos de objeto do edital em uma string única."""
+    return " ".join(str(item.get(c, "")) for c in CAMPOS_OBJETO)
+
+
+def filtrar(itens: list, _ignorado=None) -> list:
+    """
+    Lógica AND de co-ocorrência:
+      • Passa se tiver ≥1 termo do GRUPO A  (âncoras — alta precisão)
+      • OU se tiver ≥2 termos do GRUPO B    (co-ocorrência — evita falsos positivos isolados)
+    """
+    resultado = []
+    for i in itens:
+        if not isinstance(i, dict):
+            continue
+        texto = _texto_objeto(i)
+
+        # Regra 1 — basta 1 âncora do Grupo A
+        if any(p.search(texto) for p in _PADROES_A):
+            resultado.append(i)
+            continue
+
+        # Regra 2 — exige ≥2 termos do Grupo B em co-ocorrência
+        matches_b = sum(1 for p in _PADROES_B if p.search(texto))
+        if matches_b >= 2:
+            resultado.append(i)
+
+    return resultado
 
 
 def montar_row(i: dict, modalidade_nome: str) -> dict:
@@ -176,7 +221,7 @@ def varrer(termos: list[str], uf: str, data_ini: date,
                 break
 
             verificados += len(itens)
-            filtrados = filtrar(itens, termos)
+            filtrados = filtrar(itens)
             encontrados += len(filtrados)
             for i in filtrados:
                 todos.append(montar_row(i, nome_mod))
@@ -395,6 +440,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v76 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
-    "DAM · FEBRABAN · word boundary fix"
+    f"v77 | PNCP /publicacao | lógica AND (Grupo A OU ≥2×Grupo B) | "
+    "DAM · FEBRABAN · co-ocorrência"
 )
