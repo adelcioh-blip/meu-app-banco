@@ -66,18 +66,28 @@ BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
-def http_get(url: str):
-    try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:
-            body = r.read()
-            return json.loads(body.decode("utf-8")) if body.strip() else None
-    except urllib.error.HTTPError as e:
-        return {"_erro": f"HTTP {e.code}"}
-    except Exception as e:
-        return {"_erro": str(e)}
+def http_get(url: str, tentativas: int = 3, timeout: int = 45):
+    """
+    GET com retry automático.
+    - 3 tentativas antes de desistir
+    - Timeout de 45s por tentativa (PNCP é lento em algumas modalidades)
+    - Erros HTTP (4xx/5xx) não fazem retry — são erros definitivos
+    """
+    for tentativa in range(1, tentativas + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:
+                body = r.read()
+                return json.loads(body.decode("utf-8")) if body.strip() else None
+        except urllib.error.HTTPError as e:
+            return {"_erro": f"HTTP {e.code}"}   # erro definitivo — sem retry
+        except Exception as e:
+            if tentativa == tentativas:
+                return {"_erro": f"Timeout após {tentativas} tentativas"}
+            # aguarda brevemente antes do próximo retry
+            import time; time.sleep(2)
 
 
 def extrair_itens(resp) -> list:
@@ -280,8 +290,12 @@ with st.sidebar:
     st.markdown("---")
     max_paginas = st.slider(
         "Páginas por modalidade:",
-        min_value=1, max_value=10, value=3,
-        help="50 editais/página. 3 páginas = 150 editais verificados por modalidade."
+        min_value=1, max_value=10, value=2,
+        help=(
+            "50 editais/página. "
+            "2 páginas = 100 verificados por modalidade (recomendado).\n"
+            "Aumente apenas se suspeitar que há resultados além das primeiras páginas."
+        )
     )
 
     valor_minimo = st.number_input(
@@ -440,6 +454,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v77 | PNCP /publicacao | lógica AND (Grupo A OU ≥2×Grupo B) | "
-    "DAM · FEBRABAN · co-ocorrência"
+    f"v78 | PNCP /publicacao | retry 3× · timeout 45s · padrão 2 págs | "
+    "lógica AND · DAM · FEBRABAN"
 )
