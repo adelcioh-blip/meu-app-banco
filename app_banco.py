@@ -18,31 +18,18 @@ _SSL.verify_mode = ssl.CERT_NONE
 # ── Palavras-chave especializadas ─────────────────────────────────────────────
 # Foco: recolhimento de tributos e receitas públicas municipais via DAM/FEBRABAN
 PALAVRAS_CHAVE = [
-    # Termos centrais do serviço
-    "recolhimento de tributos",
-    "receitas públicas municipais",
-    "receitas municipais",
-    "receitas públicas",
-    "serviços bancários de recolhimento",
-    # DAM — Documento de Arrecadação Municipal
-    "DAM",
+    # Extraídos diretamente do objeto de referência:
+    # "PRESTAÇÃO DE SERVIÇOS BANCÁRIOS DE RECOLHIMENTO DE TRIBUTOS E DEMAIS
+    #  RECEITAS PÚBLICAS MUNICIPAIS, ATRAVÉS DE DAM, EM PADRÃO FEBRABAN"
+
+    "FEBRABAN",                          # qualificador técnico — altíssima precisão
+    "DAM",                               # Documento de Arrecadação Municipal
     "documento de arrecadação municipal",
-    "documento de arrecadação",
-    # Padrão FEBRABAN — termo técnico que qualifica o serviço
-    "FEBRABAN",
-    "padrão FEBRABAN",
-    # Variações de objeto que descrevem o mesmo serviço
-    "recolhimento de receitas",
-    "arrecadação de tributos",
-    "arrecadação de receitas municipais",
-    "arrecadação municipal",
-    "agente arrecadador",
-    "banco arrecadador",
-    "convênio de arrecadação",
-    # Tributos municipais — frequentemente no objeto do edital
-    "IPTU", "ISSQN", "ISS", "ITBI",
-    "tributos municipais",
-    "dívida ativa municipal",
+    "recolhimento de tributos",          # frase exata do objeto
+    "receitas públicas municipais",      # frase exata do objeto
+    "serviços bancários de arrecadação", # variação direta
+    "serviços bancários de recolhimento",# variação direta
+    "banco arrecadador",                 # termo técnico do contrato
 ]
 
 # Modalidades — mantemos todas pois Inexigibilidade cobre contratos diretos
@@ -403,6 +390,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v74 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
+    f"v75 | PNCP /publicacao | {len(PALAVRAS_CHAVE)} termos | "
     "DAM · FEBRABAN · Recolhimento de Tributos Municipais"
 )
