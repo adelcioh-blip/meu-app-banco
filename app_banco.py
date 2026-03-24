@@ -5,7 +5,6 @@ import urllib.request
 import urllib.error
 import json
 import ssl
-import re
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Radar — Arrecadação Municipal", layout="wide")
@@ -16,437 +15,277 @@ _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
 _SSL.verify_mode = ssl.CERT_NONE
 
-# ── Lógica AND de termos — dois grupos com regras de co-ocorrência ────────────
-#
-# GRUPO A — âncoras de altíssima precisão (sozinhas já qualificam o edital)
-#   • "FEBRABAN"                    → padrão técnico exclusivo de boletos bancários
-#   • "documento de arrecadação municipal" → nome formal do DAM por extenso
-#
-# GRUPO B — termos contextuais (válidos apenas quando combinados entre si,
-#            nunca isolados, pois são semanticamente amplos)
-#   • "DAM"                         → sigla do doc. acima (risco isolado: alto)
-#   • "recolhimento de tributos"    → pode aparecer em editais de TI/consultoria
-#   • "receitas públicas municipais"→ pode aparecer em editais de software/ERP
-#   • "serviços bancários de arrecadação"
-#   • "serviços bancários de recolhimento"
-#   • "banco arrecadador"
-#
-# REGRA: edital passa se tiver ≥1 termo do GRUPO A
-#                           OU ≥2 termos do GRUPO B (co-ocorrência)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Endpoint correto descoberto via inspeção do portal PNCP ──────────────────
+# O portal usa /api/search/ com busca full-text — completamente diferente de
+# /api/consulta/v1/contratacoes/publicacao que usávamos antes (sem texto)
+SEARCH_URL = "https://pncp.gov.br/api/search/"
+PNCP_BASE  = "https://pncp.gov.br"
 
-GRUPO_A = [
-    "FEBRABAN",
-    "documento de arrecadação municipal",
-]
+# ── Query de busca especializada ─────────────────────────────────────────────
+# "DAM FEBRABAN" retorna exclusivamente editais de credenciamento de
+# instituições financeiras para arrecadação municipal — sem falsos positivos
+QUERY_PADRAO = "DAM FEBRABAN"
 
-GRUPO_B = [
-    "DAM",
-    "recolhimento de tributos",
-    "receitas públicas municipais",
-    "serviços bancários de arrecadação",
-    "serviços bancários de recolhimento",
-    "banco arrecadador",
-]
-
-# Lista unificada usada no expander do sidebar
-PALAVRAS_CHAVE = GRUPO_A + GRUPO_B
-
-# Modalidades — mantemos todas pois Inexigibilidade cobre contratos diretos
-# com bancos (ex: Caixa Econômica, Banco do Brasil como agente exclusivo)
-MODALIDADES = {
-    6: "Pregão Eletrônico",
-    5: "Concorrência Eletrônica",
-    4: "Concorrência",
-    8: "Dispensa Eletrônica",
-    9: "Inexigibilidade",
+# ── Status disponíveis no PNCP ───────────────────────────────────────────────
+STATUS_OPCOES = {
+    "Somente em aberto (recebendo proposta)": "recebendo_proposta",
+    "Todos (abertos + encerrados)":           "",
 }
 
-BASE_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 
-
-# ── HTTP ──────────────────────────────────────────────────────────────────────
+# ── HTTP com retry ────────────────────────────────────────────────────────────
 def http_get(url: str, tentativas: int = 3, timeout: int = 45):
-    """
-    GET com retry automático.
-    - 3 tentativas antes de desistir
-    - Timeout de 45s por tentativa (PNCP é lento em algumas modalidades)
-    - Erros HTTP (4xx/5xx) não fazem retry — são erros definitivos
-    """
     for tentativa in range(1, tentativas + 1):
         try:
             req = urllib.request.Request(
-                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+                url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:
                 body = r.read()
                 return json.loads(body.decode("utf-8")) if body.strip() else None
         except urllib.error.HTTPError as e:
-            return {"_erro": f"HTTP {e.code}"}   # erro definitivo — sem retry
+            return {"_erro": f"HTTP {e.code} — {e.reason}"}
         except Exception as e:
             if tentativa == tentativas:
-                return {"_erro": f"Timeout após {tentativas} tentativas"}
-            # aguarda brevemente antes do próximo retry
+                return {"_erro": str(e)}
             import time; time.sleep(2)
 
 
-def extrair_itens(resp) -> list:
-    if isinstance(resp, list):
-        return resp
-    if isinstance(resp, dict):
-        for k in ("data", "content", "items", "resultado", "contratacoes"):
-            v = resp.get(k)
-            if isinstance(v, list):
-                return v
-    return []
+# ── Busca principal ───────────────────────────────────────────────────────────
+def buscar(query: str, status: str, uf: str,
+           data_ini: date, data_fim: date,
+           max_paginas: int, tam_pagina: int,
+           barra) -> tuple[list, int, list]:
+
+    todos  = []
+    total_api = 0
+    erros  = []
+
+    for pagina in range(1, max_paginas + 1):
+        barra.progress(
+            (pagina - 1) / max_paginas,
+            text=f"🔍 Consultando PNCP — página {pagina} de {max_paginas}…"
+        )
+
+        params = {
+            "q":              query,
+            "tipos_documento":"edital",
+            "ordenacao":      "-data",
+            "pagina":         pagina,
+            "tam_pagina":     tam_pagina,
+        }
+        if status:
+            params["status"] = status
+
+        url  = SEARCH_URL + "?" + urllib.parse.urlencode(params)
+        resp = http_get(url)
+
+        if resp is None:
+            break
+        if "_erro" in resp:
+            erros.append(f"Página {pagina}: {resp['_erro']}")
+            break
+
+        items     = resp.get("items", [])
+        total_api = resp.get("total", total_api)
+
+        if not items:
+            break
+
+        for item in items:
+            # Filtro de UF (local — API não oferece parâmetro nativo)
+            if uf and item.get("uf", "").upper() != uf.upper():
+                continue
+
+            # Filtro de data de publicação
+            pub_raw = item.get("data_publicacao_pncp") or ""
+            pub_dt  = pub_raw[:10]   # "YYYY-MM-DD"
+            if pub_dt:
+                if pub_dt < data_ini.isoformat() or pub_dt > data_fim.isoformat():
+                    continue
+
+            todos.append(item)
+
+        if len(items) < tam_pagina:
+            break   # última página
+
+    barra.progress(1.0, text="✅ Concluído.")
+    return todos, total_api, erros
 
 
-CAMPOS_OBJETO = (
-    "objetoCompra", "objeto", "descricao",
-    "informacaoComplementar", "objetoContratacao",
-)
+def montar_row(item: dict) -> dict:
+    link = PNCP_BASE + (item.get("item_url") or "/app/editais")
 
-def _compilar(termos: list[str]) -> list:
-    """Compila lista de termos em padrões regex com word boundary."""
-    return [
-        re.compile(r'\b' + re.escape(t) + r'\b', re.IGNORECASE)
-        for t in termos
-    ]
+    pub = (item.get("data_publicacao_pncp") or "—")[:10]
+    fim = (item.get("data_fim_vigencia")    or "—")[:10]
+    ini = (item.get("data_inicio_vigencia") or "—")[:10]
 
-_PADROES_A = _compilar(GRUPO_A)
-_PADROES_B = _compilar(GRUPO_B)
-
-
-def _texto_objeto(item: dict) -> str:
-    """Concatena todos os campos de objeto do edital em uma string única."""
-    return " ".join(str(item.get(c, "")) for c in CAMPOS_OBJETO)
-
-
-def filtrar(itens: list, _ignorado=None) -> list:
-    """
-    Lógica AND de co-ocorrência:
-      • Passa se tiver ≥1 termo do GRUPO A  (âncoras — alta precisão)
-      • OU se tiver ≥2 termos do GRUPO B    (co-ocorrência — evita falsos positivos isolados)
-    """
-    resultado = []
-    for i in itens:
-        if not isinstance(i, dict):
-            continue
-        texto = _texto_objeto(i)
-
-        # Regra 1 — basta 1 âncora do Grupo A
-        if any(p.search(texto) for p in _PADROES_A):
-            resultado.append(i)
-            continue
-
-        # Regra 2 — exige ≥2 termos do Grupo B em co-ocorrência
-        matches_b = sum(1 for p in _PADROES_B if p.search(texto))
-        if matches_b >= 2:
-            resultado.append(i)
-
-    return resultado
-
-
-def montar_row(i: dict, modalidade_nome: str) -> dict:
-    orgao = i.get("orgaoEntidade") or i.get("orgao") or {}
-    if isinstance(orgao, str):
-        orgao = {"razaoSocial": orgao}
-
-    unidade = i.get("unidadeOrgao") or {}
-    cnpj = orgao.get("cnpj", "")
-    ano  = i.get("anoCompra") or i.get("ano", "")
-    seq  = i.get("sequencialCompra") or i.get("sequencial", "")
-    link = (
-        f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
-        if cnpj and ano and seq else "https://pncp.gov.br/app/editais"
-    )
-
-    objeto = str(
-        i.get("objetoCompra") or i.get("objeto") or i.get("descricao") or "—"
-    )[:160]
-
-    # Valor estimado — campo chave para priorização comercial
-    valor = i.get("valorTotalEstimado") or i.get("valorEstimado") or 0
+    valor = item.get("valor_global") or 0
     try:
         valor = float(valor)
     except (TypeError, ValueError):
         valor = 0.0
 
-    pub = (i.get("dataPublicacaoPncp") or i.get("dataPublicacao") or "—")[:10]
-    enc_raw = i.get("dataEncerramentoProposta") or i.get("dataFimRecebimentoProposta") or ""
-    enc = enc_raw[:10] if enc_raw else "—"
-
-    situacao = i.get("situacaoCompraNome") or i.get("situacao") or "—"
+    objeto = str(item.get("description") or "—")[:220]
 
     return {
-        "PUBLICAÇÃO":   pub,
-        "ENCERRAMENTO": enc,
-        "ÓRGÃO":        orgao.get("razaoSocial", "—")[:55],
-        "MUNICÍPIO":    unidade.get("nomeUnidade", "—")[:40],
-        "UF":           unidade.get("ufSigla") or orgao.get("uf", "—"),
-        "OBJETO":       objeto,
-        "VALOR EST. R$": valor,
-        "SITUAÇÃO":     situacao,
-        "MODALIDADE":   modalidade_nome,
-        "LINK":         link,
+        "PUBLICAÇÃO":  pub,
+        "INÍCIO":      ini,
+        "VIGÊNCIA ATÉ":fim,
+        "ÓRGÃO":       (item.get("orgao_nome")    or "—")[:60],
+        "MUNICÍPIO":   (item.get("municipio_nome") or "—")[:40],
+        "UF":          item.get("uf", "—"),
+        "OBJETO":      objeto,
+        "MODALIDADE":  item.get("modalidade_licitacao_nome", "—"),
+        "SITUAÇÃO":    item.get("situacao_nome", "—"),
+        "VALOR R$":    valor,
+        "LINK":        link,
     }
-
-
-# ── Varredura principal ───────────────────────────────────────────────────────
-def varrer(termos: list[str], uf: str, data_ini: date,
-           data_fim: date, modalidades_sel: dict,
-           max_pag: int, barra) -> tuple[pd.DataFrame, list[str], dict]:
-
-    todos  = []
-    erros  = []
-    stats  = {}
-    n_mods = len(modalidades_sel)
-
-    for idx, (cod, nome_mod) in enumerate(modalidades_sel.items()):
-        barra.progress(idx / n_mods, text=f"🔍 {nome_mod}…")
-        verificados = 0
-        encontrados = 0
-
-        for pagina in range(1, max_pag + 1):
-            params = {
-                "dataInicial":                data_ini.strftime("%Y%m%d"),
-                "dataFinal":                  data_fim.strftime("%Y%m%d"),
-                "codigoModalidadeContratacao": cod,
-                "pagina":                     pagina,
-                "tamanhoPagina":              50,
-            }
-            if uf:
-                params["uf"] = uf
-
-            resp = http_get(BASE_URL + "?" + urllib.parse.urlencode(params))
-
-            if resp is None:
-                break
-            if "_erro" in resp:
-                erros.append(f"{nome_mod} pág.{pagina}: {resp['_erro']}")
-                break
-
-            itens = extrair_itens(resp)
-            if not itens:
-                break
-
-            verificados += len(itens)
-            filtrados = filtrar(itens)
-            encontrados += len(filtrados)
-            for i in filtrados:
-                todos.append(montar_row(i, nome_mod))
-
-            if len(itens) < 50:
-                break
-
-        stats[nome_mod] = {"verificados": verificados, "encontrados": encontrados}
-
-    barra.progress(1.0, text="✅ Concluído.")
-
-    if not todos:
-        return pd.DataFrame(), erros, stats
-
-    df = (
-        pd.DataFrame(todos)
-        .drop_duplicates(subset=["LINK"])
-        .sort_values(["PUBLICAÇÃO", "VALOR EST. R$"], ascending=[False, False])
-        .reset_index(drop=True)
-    )
-    return df, erros, stats
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("🎯 Filtros de Busca")
 
+    status_label = st.radio(
+        "Status dos editais:",
+        list(STATUS_OPCOES.keys()),
+        index=0,
+    )
+    status_val = STATUS_OPCOES[status_label]
+
     uf = st.text_input("UF (Opcional):", "").upper().strip()
 
     st.markdown("---")
-    st.markdown("**Período**")
+    st.markdown("**Período de publicação**")
     preset = st.radio(
         "Predefinido:",
-        ["Últimos 7 dias", "Últimos 15 dias", "Últimos 30 dias", "Personalizado"],
-        index=2,
+        ["Últimos 7 dias", "Últimos 30 dias", "Últimos 90 dias", "Personalizado"],
+        index=1,
     )
     hoje = date.today()
     if preset == "Últimos 7 dias":
-        data_ini, data_fim = hoje - timedelta(days=7), hoje
-    elif preset == "Últimos 15 dias":
-        data_ini, data_fim = hoje - timedelta(days=15), hoje
+        data_ini, data_fim = hoje - timedelta(days=7),  hoje
     elif preset == "Últimos 30 dias":
         data_ini, data_fim = hoje - timedelta(days=30), hoje
+    elif preset == "Últimos 90 dias":
+        data_ini, data_fim = hoje - timedelta(days=90), hoje
     else:
-        col1, col2 = st.columns(2)
-        data_ini = col1.date_input("De:", value=hoje - timedelta(days=30))
-        data_fim = col2.date_input("Até:", value=hoje)
+        c1, c2 = st.columns(2)
+        data_ini = c1.date_input("De:", value=hoje - timedelta(days=30))
+        data_fim = c2.date_input("Até:", value=hoje)
 
     st.markdown("---")
-    st.markdown("**Modalidades**")
-    mods_sel = {}
-    for cod, nome in MODALIDADES.items():
-        if st.checkbox(nome, value=True, key=f"mod_{cod}"):
-            mods_sel[cod] = nome
-
-    st.markdown("---")
+    tam_pagina  = st.select_slider(
+        "Resultados por página (API):",
+        options=[10, 20, 50],
+        value=20,
+    )
     max_paginas = st.slider(
-        "Páginas por modalidade:",
-        min_value=1, max_value=10, value=2,
-        help=(
-            "50 editais/página. "
-            "2 páginas = 100 verificados por modalidade (recomendado).\n"
-            "Aumente apenas se suspeitar que há resultados além das primeiras páginas."
-        )
+        "Páginas por consulta:",
+        min_value=1, max_value=10, value=3,
+        help="20 resultados/página × 3 páginas = até 60 editais consultados."
     )
 
     valor_minimo = st.number_input(
-        "Valor mínimo estimado (R$):",
-        min_value=0, value=0, step=10000,
-        help="Filtra resultados pelo valor estimado do contrato."
+        "Valor mínimo (R$):",
+        min_value=0, value=0, step=10_000,
+        help="Filtra pelo valor global do contrato."
     )
 
     st.markdown("---")
-    apenas_abertos = st.checkbox(
-        "Somente editais em aberto",
-        value=True,
-        help=(
-            "Exclui editais encerrados, cancelados, homologados ou com "
-            "prazo de encerramento já vencido."
-        ),
-    )
+    with st.expander("🔎 Query de busca"):
+        query = st.text_area(
+            "Termos (enviados ao PNCP):",
+            value=QUERY_PADRAO,
+            height=68,
+            help="Busca full-text no índice do PNCP. Padrão: 'DAM FEBRABAN'."
+        )
 
     btn = st.button("🚀 EXECUTAR VARREDURA", use_container_width=True)
 
-    with st.expander(f"📋 {len(PALAVRAS_CHAVE)} termos buscados"):
-        for t in PALAVRAS_CHAVE:
-            st.caption(f"• {t}")
 
 # ── CORPO PRINCIPAL ───────────────────────────────────────────────────────────
 if btn:
-    if not mods_sel:
-        st.error("Selecione ao menos uma modalidade no painel lateral.")
-        st.stop()
-
-    dias = (data_fim - data_ini).days
-    if dias > 60:
-        st.warning(
-            f"Período de **{dias} dias** pode causar timeout nas modalidades com muitos editais. "
-            "Recomendado: até 60 dias."
-        )
-
     barra = st.progress(0)
-    df, erros, stats = varrer(
-        PALAVRAS_CHAVE, uf, data_ini, data_fim, mods_sel, max_paginas, barra
+    itens, total_api, erros = buscar(
+        query.strip(), status_val, uf,
+        data_ini, data_fim,
+        max_paginas, tam_pagina, barra
     )
 
-    # ── Filtro: somente editais em aberto ────────────────────────────────────
-    SITUACOES_FECHADAS = {
-        "encerrada", "cancelada", "homologada", "revogada",
-        "anulada", "suspensa", "deserta", "fracassada",
-    }
-    hoje_iso = date.today().isoformat()  # "YYYY-MM-DD" — comparável com string do PNCP
-
-    if apenas_abertos and not df.empty:
-        def esta_aberto(row) -> bool:
-            # 1. Verificar situação — elimina cancelados/homologados mesmo sem data
-            sit = str(row["SITUAÇÃO"]).lower()
-            if any(s in sit for s in SITUACOES_FECHADAS):
-                return False
-            # 2. Verificar data de encerramento — elimina prazo vencido
-            enc = row["ENCERRAMENTO"]
-            if enc and enc != "—":
-                return enc >= hoje_iso   # "2026-03-20" >= "2026-03-18" → aberto
-            # 3. Sem data de encerramento e situação não fechada → mantém
-            return True
-
-        antes = len(df)
-        df = df[df.apply(esta_aberto, axis=1)].reset_index(drop=True)
-        removidos = antes - len(df)
-        if removidos:
-            st.caption(f"🔍 {removidos} edital(is) encerrado(s) ou vencido(s) ocultado(s).")
-
-    # ── Filtro de valor mínimo ────────────────────────────────────────────────
-    if valor_minimo > 0 and not df.empty:
-        df = df[df["VALOR EST. R$"] >= valor_minimo].reset_index(drop=True)
-
-    # ── Métricas ──────────────────────────────────────────────────────────────
-    total_ver = sum(s["verificados"] for s in stats.values())
-    total_enc = sum(s["encontrados"] for s in stats.values())
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Editais verificados", f"{total_ver:,}")
-    c2.metric("Matches encontrados", f"{total_enc:,}")
-    c3.metric("Após filtro de valor", f"{len(df):,}")
-    c4.metric("Período consultado", f"{dias} dias")
-
-    # ── Avisos não críticos ───────────────────────────────────────────────────
     if erros:
-        with st.expander(f"⚠️ {len(erros)} aviso(s) — resultados podem ser parciais"):
+        with st.expander(f"⚠️ {len(erros)} aviso(s)"):
             for e in erros:
                 st.warning(e)
+
+    # Montar DataFrame
+    rows = [montar_row(i) for i in itens]
+    df   = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    # Filtro valor mínimo
+    if valor_minimo > 0 and not df.empty:
+        df = df[df["VALOR R$"] >= valor_minimo].reset_index(drop=True)
+
+    # ── Métricas ──────────────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total no PNCP (query)", f"{total_api:,}")
+    c2.metric("Encontrados no período/UF", f"{len(itens):,}")
+    c3.metric("Exibidos (após filtros)", f"{len(df):,}")
 
     # ── Resultados ────────────────────────────────────────────────────────────
     if df.empty:
         st.info(
             "Nenhum edital encontrado com os filtros aplicados.\n\n"
             "**Sugestões:**\n"
-            "- Ampliar o período de datas\n"
-            "- Aumentar o número de páginas\n"
-            "- Remover filtro de UF ou de valor mínimo\n"
-            "- Verificar se as modalidades estão selecionadas"
+            "- Ampliar o período ou selecionar 'Todos' no status\n"
+            "- Remover filtro de UF\n"
+            "- Aumentar número de páginas"
         )
     else:
-        # Filtro interativo de UF nos resultados
-        ufs = sorted(df["UF"].dropna().unique().tolist())
-        if len(ufs) > 1 and not uf:
-            ufs_sel = st.multiselect("Filtrar UF nos resultados:", ufs, default=ufs)
-            df = df[df["UF"].isin(ufs_sel)].reset_index(drop=True)
+        # Filtro interativo de UF nos resultados (quando UF não foi pré-filtrada)
+        if not uf:
+            ufs_disp = sorted(df["UF"].dropna().unique().tolist())
+            if len(ufs_disp) > 1:
+                ufs_sel = st.multiselect(
+                    "Filtrar por UF nos resultados:", ufs_disp, default=ufs_disp
+                )
+                df = df[df["UF"].isin(ufs_sel)].reset_index(drop=True)
 
-        st.success(f"**{len(df)}** edital(is) exibido(s).")
+        st.success(f"**{len(df)}** edital(is) encontrado(s).")
 
-        # Formatação de valor
+        # Formatar valor
         df_exib = df.copy()
-        df_exib["VALOR EST. R$"] = df_exib["VALOR EST. R$"].apply(
-            lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            if v > 0 else "—"
+        df_exib["VALOR R$"] = df_exib["VALOR R$"].apply(
+            lambda v: (
+                f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                if v > 0 else "—"
+            )
         )
 
         st.dataframe(
             df_exib,
             column_config={
-                "LINK":         st.column_config.LinkColumn("🔗 Edital", display_text="ABRIR"),
-                "OBJETO":       st.column_config.Column(width="large"),
-                "ÓRGÃO":        st.column_config.Column(width="medium"),
-                "VALOR EST. R$":st.column_config.Column(width="small"),
-                "PUBLICAÇÃO":   st.column_config.Column(width="small"),
-                "ENCERRAMENTO": st.column_config.Column(width="small"),
-                "SITUAÇÃO":     st.column_config.Column(width="small"),
-                "MODALIDADE":   st.column_config.Column(width="small"),
-                "UF":           st.column_config.Column(width="small"),
+                "LINK":        st.column_config.LinkColumn("🔗 Edital", display_text="ABRIR"),
+                "OBJETO":      st.column_config.Column(width="large"),
+                "ÓRGÃO":       st.column_config.Column(width="medium"),
+                "MUNICÍPIO":   st.column_config.Column(width="small"),
+                "UF":          st.column_config.Column(width="small"),
+                "PUBLICAÇÃO":  st.column_config.Column(width="small"),
+                "INÍCIO":      st.column_config.Column(width="small"),
+                "VIGÊNCIA ATÉ":st.column_config.Column(width="small"),
+                "MODALIDADE":  st.column_config.Column(width="small"),
+                "SITUAÇÃO":    st.column_config.Column(width="small"),
+                "VALOR R$":    st.column_config.Column(width="small"),
             },
             hide_index=True,
             use_container_width=True,
         )
 
-        col_csv, col_stats = st.columns([1, 3])
-        with col_csv:
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Exportar CSV", csv, "radar_boletos.csv", "text/csv")
-
-    # ── Cobertura por modalidade ──────────────────────────────────────────────
-    with st.expander("📊 Cobertura por modalidade"):
-        st.dataframe(
-            pd.DataFrame([
-                {
-                    "Modalidade":  m,
-                    "Verificados": s["verificados"],
-                    "Encontrados": s["encontrados"],
-                    "Taxa %": f"{(s['encontrados']/s['verificados']*100):.1f}%"
-                    if s["verificados"] > 0 else "—",
-                }
-                for m, s in stats.items()
-            ]),
-            hide_index=True,
-            use_container_width=True,
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Exportar CSV", csv, "radar_arrecadacao.csv", "text/csv"
         )
 
 else:
@@ -454,6 +293,6 @@ else:
 
 st.divider()
 st.caption(
-    f"v78 | PNCP /publicacao | retry 3× · timeout 45s · padrão 2 págs | "
-    "lógica AND · DAM · FEBRABAN"
+    "v79 | PNCP /api/search/ (full-text) | "
+    "query: DAM FEBRABAN | status: recebendo_proposta"
 )
