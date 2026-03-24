@@ -115,7 +115,16 @@ def buscar(query: str, status: str, uf: str,
 
 
 def montar_row(item: dict) -> dict:
-    link = PNCP_BASE + (item.get("item_url") or "/app/editais")
+    # item_url retorna "/compras/{cnpj}/{ano}/{seq}" mas o portal usa "/app/editais/..."
+    raw_url = item.get("item_url") or ""
+    if raw_url.startswith("/compras/"):
+        portal_path = raw_url.replace("/compras/", "/app/editais/", 1)
+    else:
+        cnpj = item.get("orgao_cnpj", "")
+        ano  = item.get("ano", "")
+        seq  = item.get("numero_sequencial", "")
+        portal_path = f"/app/editais/{cnpj}/{ano}/{seq}" if cnpj and ano and seq else "/app/editais"
+    link = PNCP_BASE + portal_path
 
     pub = (item.get("data_publicacao_pncp") or "—")[:10]
     fim = (item.get("data_fim_vigencia")    or "—")[:10]
@@ -293,6 +302,5 @@ else:
 
 st.divider()
 st.caption(
-    "v79 | PNCP /api/search/ (full-text) | "
-    "query: DAM FEBRABAN | status: recebendo_proposta"
+    "v80 | Fix link: /compras/ → /app/editais/ | PNCP full-text | DAM FEBRABAN"
 )
