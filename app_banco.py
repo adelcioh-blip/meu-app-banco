@@ -96,24 +96,46 @@ STATUS_OPCOES = {
 _SITUACAO_ABERTO_KW = {"recebendo", "aberto", "ativo", "publicado", "vigente"}
 
 
-# ── HTTP com retry ────────────────────────────────────────────────────────────
-def http_get(url: str, tentativas: int = 3, timeout: int = 45) -> dict | None:
+# ── HTTP com retry e headers realistas ───────────────────────────────────────
+# O endpoint /api/consulta rejeita requests com headers minimalistas (errno 104).
+# Simulamos um browser completo e usamos backoff exponencial entre tentativas.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":           "application/json, text/plain, */*",
+    "Accept-Language":  "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding":  "gzip, deflate, br",
+    "Referer":          "https://pncp.gov.br/app/editais",
+    "Origin":           "https://pncp.gov.br",
+    "Connection":       "keep-alive",
+    "Sec-Fetch-Dest":   "empty",
+    "Sec-Fetch-Mode":   "cors",
+    "Sec-Fetch-Site":   "same-origin",
+}
+
+
+def http_get(url: str, tentativas: int = 4, timeout: int = 60) -> dict | None:
     for tentativa in range(1, tentativas + 1):
         try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            )
+            req = urllib.request.Request(url, headers=_HEADERS)
             with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:
-                body = r.read()
-                return json.loads(body.decode("utf-8")) if body.strip() else None
+                raw = r.read()
+                # urlopen descomprime gzip automaticamente; decodifica utf-8
+                return json.loads(raw.decode("utf-8")) if raw.strip() else None
         except urllib.error.HTTPError as e:
-            return {"_erro": f"HTTP {e.code} — {e.reason}"}
+            # 4xx são definitivos — não há sentido em tentar novamente
+            if e.code < 500:
+                return {"_erro": f"HTTP {e.code} — {e.reason}"}
+            if tentativa == tentativas:
+                return {"_erro": f"HTTP {e.code} — {e.reason}"}
         except Exception as e:
             if tentativa == tentativas:
                 return {"_erro": str(e)}
-            time.sleep(2)
-    return None
+        # Backoff exponencial: 2s, 4s, 8s
+        time.sleep(2 ** tentativa)
 
 
 # ── Normalização de texto (remove acentos para comparação robusta) ────────────
@@ -424,9 +446,13 @@ with st.sidebar:
     if usar_estruturada:
         tam_pagina = st.select_slider(
             "Registros por página (API):",
-            options=[100, 200, 500],
-            value=500,
-            help="A API estruturada suporta até 500 por página — use 500 para minimizar chamadas.",
+            options=[20, 50, 100, 200, 500],
+            value=50,
+            help=(
+                "Tamanho da página enviado à API estruturada do PNCP.\n\n"
+                "Valores menores (20–50) são mais estáveis e evitam reset de conexão.\n"
+                "Use 200–500 apenas se 50 estiver funcionando bem."
+            ),
         )
     else:
         tam_pagina = st.select_slider(
@@ -438,9 +464,9 @@ with st.sidebar:
     max_paginas = st.slider(
         "Páginas por consulta:",
         min_value=1, max_value=20 if usar_estruturada else 10,
-        value=5 if usar_estruturada else 3,
+        value=10 if usar_estruturada else 3,
         help=(
-            f"{tam_pagina} resultados/página × N páginas."
+            f"{tam_pagina} registros/página × N páginas."
             " Aumente para cobrir períodos mais longos."
         ),
     )
@@ -566,5 +592,5 @@ else:
 
 st.divider()
 st.caption(
-    "v83 | DAM excluído quando é o único formato — mantido se acompanhado de PIX/boleto/TED/etc. | Lógica booleana AND/NOT | API Estruturada + cache 30min"
+    "v84 | Fix errno 104: headers browser completo + backoff exp. | tam_pagina padrão 50 (mais estável) | DAM-exclusivo descartado"
 )
