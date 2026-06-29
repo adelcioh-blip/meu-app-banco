@@ -21,30 +21,51 @@ CONSULTA_URL = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 SEARCH_URL   = "https://pncp.gov.br/api/search/"
 PNCP_BASE    = "https://pncp.gov.br"
 
-# ── Termos de relevância (filtro local) ───────────────────────────────────────
-# Grupo A — qualquer um é suficiente para confirmar relevância
-TERMOS_A = [
-    "febraban",
-    "documento de arrecadação municipal",
+# ── Lógica booleana de relevância (filtro local no modo API Estruturada) ──────
+#
+# Regra: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT EXCLUSAO
+#
+# GRUPO_1 — modalidade/instrumento jurídico
+GRUPO_1 = [
+    "credenciamento",
+    "inexigibilidade",
+]
+# GRUPO_2 — tipo de instituição
+GRUPO_2 = [
+    "instituição de pagamento",
+    "banco digital",
+    "serviços bancários",
+    "instituição financeira",
+    "instituições financeiras",
     "banco arrecadador",
-    "credenciamento de instituições financeiras para arrecadação",
-    "credenciamento de bancos",
-    "dam ",
+    "febraban",
 ]
-# Grupo B — dois ou mais confirmam relevância
-TERMOS_B = [
-    "arrecadação municipal",
-    "recolhimento de tributos municipais",
+# GRUPO_3 — serviço/finalidade
+GRUPO_3 = [
+    "pix",
+    "boleto",
+    "pagamento digital",
+    "arrecadação",
+    "recebimento",
+    "recolhimento",
+    "tributos",
     "receitas municipais",
-    "serviços bancários de arrecadação",
-    "tributos municipais",
-    "guia de arrecadação",
-    "arrecadação de tributos",
-    "receitas públicas municipais",
-    "credenciamento bancário",
-    "recolhimento de receitas",
-    "arrecadação de receitas municipais",
+    "dam",
 ]
+# EXCLUSAO — editais restritos exclusivamente a DAM (fora do escopo)
+EXCLUSAO = [
+    "exclusivamente dam",
+    "somente dam",
+    "dam como único",
+    "dam como unico",
+]
+
+# Query padrão para o modo full-text /api/search
+QUERY_PADRAO = (
+    '(credenciamento OR inexigibilidade) '
+    '("instituição de pagamento" OR "banco digital" OR "serviços bancários") '
+    '(PIX OR boleto OR arrecadação OR recebimento)'
+)
 
 # ── Status ────────────────────────────────────────────────────────────────────
 STATUS_OPCOES = {
@@ -78,14 +99,24 @@ def http_get(url: str, tentativas: int = 3, timeout: int = 45) -> dict | None:
 # ── Relevância ────────────────────────────────────────────────────────────────
 def score_relevancia(texto: str) -> int:
     t = texto.lower()
-    return sum(10 for k in TERMOS_A if k in t) + sum(3 for k in TERMOS_B if k in t)
+    # Penalidade total se cair na exclusão
+    if any(ex in t for ex in EXCLUSAO):
+        return 0
+    g1 = sum(5 for k in GRUPO_1 if k in t)
+    g2 = sum(5 for k in GRUPO_2 if k in t)
+    g3 = sum(3 for k in GRUPO_3 if k in t)
+    return g1 + g2 + g3
 
 
 def eh_relevante(texto: str) -> bool:
+    """Implementa: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT EXCLUSAO."""
     t = texto.lower()
-    if any(k in t for k in TERMOS_A):
-        return True
-    return sum(1 for k in TERMOS_B if k in t) >= 2
+    if any(ex in t for ex in EXCLUSAO):
+        return False
+    tem_g1 = any(k in t for k in GRUPO_1)
+    tem_g2 = any(k in t for k in GRUPO_2)
+    tem_g3 = any(k in t for k in GRUPO_3)
+    return tem_g1 and tem_g2 and tem_g3
 
 
 def situacao_aberta(nome: str) -> bool:
@@ -383,9 +414,9 @@ with st.sidebar:
         with st.expander("🔎 Query de busca"):
             query = st.text_area(
                 "Termos (enviados ao PNCP):",
-                value="DAM FEBRABAN",
-                height=68,
-                help="Busca full-text no índice do PNCP.",
+                value=QUERY_PADRAO,
+                height=120,
+                help="Busca full-text no índice do PNCP. Suporta OR, AND e aspas para frases exatas.",
             )
     else:
         query = ""
@@ -493,5 +524,5 @@ else:
 
 st.divider()
 st.caption(
-    "v81 | API Estruturada /consulta (UF+data servidor) + score relevância + cache 30min | PNCP"
+    "v82 | Lógica booleana: (credenciamento OR inexigibilidade) AND (banco digital/serviços bancários) AND (PIX/boleto/arrecadação) NOT (exclusivamente DAM) | API Estruturada + cache 30min"
 )
