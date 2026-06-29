@@ -6,6 +6,7 @@ import urllib.error
 import json
 import ssl
 import time
+import unicodedata
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Radar — Arrecadação Municipal", layout="wide")
@@ -23,7 +24,7 @@ PNCP_BASE    = "https://pncp.gov.br"
 
 # ── Lógica booleana de relevância (filtro local no modo API Estruturada) ──────
 #
-# Regra: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT EXCLUSAO
+# Regra: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT dam_exclusivo(texto)
 #
 # GRUPO_1 — modalidade/instrumento jurídico
 GRUPO_1 = [
@@ -40,7 +41,7 @@ GRUPO_2 = [
     "banco arrecadador",
     "febraban",
 ]
-# GRUPO_3 — serviço/finalidade
+# GRUPO_3 — serviço/finalidade (DAM removido daqui — tratado separadamente)
 GRUPO_3 = [
     "pix",
     "boleto",
@@ -50,14 +51,33 @@ GRUPO_3 = [
     "recolhimento",
     "tributos",
     "receitas municipais",
-    "dam",
 ]
-# EXCLUSAO — editais restritos exclusivamente a DAM (fora do escopo)
-EXCLUSAO = [
-    "exclusivamente dam",
-    "somente dam",
-    "dam como único",
-    "dam como unico",
+
+# Marcadores que indicam emissão via DAM
+_MARCADORES_DAM = [
+    "dam",
+    "documento de arrecadação municipal",
+    "guia dam",
+    "guia de arrecadação municipal",
+]
+# Formatos alternativos ao DAM — se o edital cita qualquer um, não é DAM-exclusivo
+# Evitar termos curtos (doc, ted) que são substrings de outras palavras (documento, contested...)
+_FORMATOS_OUTROS = [
+    "pix",
+    "boleto",
+    "pagamento digital",
+    "transferencia eletronica",
+    "transferência eletrônica",
+    "cartao",
+    "cartão",
+    "nota fiscal",
+    "debito em conta",
+    "débito em conta",
+    "pagamento online",
+    "internet banking",
+    "mobile banking",
+    "pagamento eletronico",
+    "pagamento eletrônico",
 ]
 
 # Query padrão para o modo full-text /api/search
@@ -96,26 +116,48 @@ def http_get(url: str, tentativas: int = 3, timeout: int = 45) -> dict | None:
     return None
 
 
+# ── Normalização de texto (remove acentos para comparação robusta) ────────────
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFKD", s.lower()).encode("ascii", "ignore").decode("ascii")
+
+# Pré-normaliza todos os termos uma única vez na inicialização
+_G1_N  = [_norm(k) for k in GRUPO_1]
+_G2_N  = [_norm(k) for k in GRUPO_2]
+_G3_N  = [_norm(k) for k in GRUPO_3]
+_DAM_N = [_norm(k) for k in _MARCADORES_DAM]
+_OUT_N = [_norm(k) for k in _FORMATOS_OUTROS]
+
+
 # ── Relevância ────────────────────────────────────────────────────────────────
+def _dam_exclusivo(t_norm: str) -> bool:
+    """True quando o edital cita DAM mas NÃO cita nenhum outro formato de pagamento."""
+    tem_dam    = any(k in t_norm for k in _DAM_N)
+    tem_outros = any(k in t_norm for k in _OUT_N)
+    return tem_dam and not tem_outros
+
+
 def score_relevancia(texto: str) -> int:
-    t = texto.lower()
-    # Penalidade total se cair na exclusão
-    if any(ex in t for ex in EXCLUSAO):
+    t = _norm(texto)
+    if _dam_exclusivo(t):
         return 0
-    g1 = sum(5 for k in GRUPO_1 if k in t)
-    g2 = sum(5 for k in GRUPO_2 if k in t)
-    g3 = sum(3 for k in GRUPO_3 if k in t)
+    g1 = sum(5 for k in _G1_N if k in t)
+    g2 = sum(5 for k in _G2_N if k in t)
+    g3 = sum(3 for k in _G3_N if k in t)
     return g1 + g2 + g3
 
 
 def eh_relevante(texto: str) -> bool:
-    """Implementa: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT EXCLUSAO."""
-    t = texto.lower()
-    if any(ex in t for ex in EXCLUSAO):
+    """
+    Regra: GRUPO_1 AND GRUPO_2 AND GRUPO_3 AND NOT dam_exclusivo.
+    Editais com DAM + outro formato passam; DAM sozinho é descartado.
+    Comparação sem acentos — robusto a variações tipográficas do PNCP.
+    """
+    t = _norm(texto)
+    if _dam_exclusivo(t):
         return False
-    tem_g1 = any(k in t for k in GRUPO_1)
-    tem_g2 = any(k in t for k in GRUPO_2)
-    tem_g3 = any(k in t for k in GRUPO_3)
+    tem_g1 = any(k in t for k in _G1_N)
+    tem_g2 = any(k in t for k in _G2_N)
+    tem_g3 = any(k in t for k in _G3_N)
     return tem_g1 and tem_g2 and tem_g3
 
 
@@ -524,5 +566,5 @@ else:
 
 st.divider()
 st.caption(
-    "v82 | Lógica booleana: (credenciamento OR inexigibilidade) AND (banco digital/serviços bancários) AND (PIX/boleto/arrecadação) NOT (exclusivamente DAM) | API Estruturada + cache 30min"
+    "v83 | DAM excluído quando é o único formato — mantido se acompanhado de PIX/boleto/TED/etc. | Lógica booleana AND/NOT | API Estruturada + cache 30min"
 )
