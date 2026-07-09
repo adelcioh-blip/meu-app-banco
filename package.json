@@ -1,0 +1,21 @@
+{
+  "name": "radar-licitacoes",
+  "version": "1.0.0",
+  "description": "Buscador de licitações PNCP — arrecadação e meios de pagamento",
+  "main": "src/api/server.js",
+  "scripts": {
+    "start": "node src/api/server.js",
+    "dev": "nodemon src/api/server.js",
+    "validate-query": "node scripts/validate_pncp_query.js",
+    "test-filter": "node src/filter/relevance.js"
+  },
+  "dependencies": {
+    "express": "^4.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
