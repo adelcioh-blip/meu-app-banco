@@ -119,7 +119,7 @@ function buildUrl(base, params) {
 // ── Processa um lote de itens brutos ─────────────────────────────────────────
 // Filtra por relevância, classifica (Nível 1) e persiste no banco.
 // Retorna { relevantes, inseridas, duplicatas }
-function processarLote(raws) {
+async function processarLote(raws) {
   let relevantes = 0, inseridas = 0, duplicatas = 0;
 
   for (const raw of raws) {
@@ -142,7 +142,7 @@ function processarLote(raws) {
       justificativa:  classif.justificativa,
     };
 
-    const { inserted } = upsertLicitacao(registro);
+    const { inserted } = await upsertLicitacao(registro);
     if (inserted) inseridas++;
     else duplicatas++;
   }
@@ -196,7 +196,7 @@ async function varrerEstruturado({ dataIni, dataFim, uf, modalidades, maxPaginas
             r.situacaoCompraNome || r.situacaoNome || ''))
         : raws;
 
-      const { relevantes, inseridas, duplicatas } = processarLote(filtrados);
+      const { relevantes, inseridas, duplicatas } = await processarLote(filtrados);
       log.total_relevantes += relevantes;
       log.total_inseridas  += inseridas;
       log.total_duplicatas += duplicatas;

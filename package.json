@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/api/server.js",
     "dev": "nodemon src/api/server.js",
+    "build": "npm run build --prefix client",
     "client": "npm run dev --prefix client",
     "validate-query": "node scripts/validate_pncp_query.js",
     "test-filter": "node src/filter/relevance.js",
@@ -13,7 +14,9 @@
     "diaria": "node scripts/varredura_diaria.js"
   },
   "dependencies": {
-    "express": "^4.18.3"
+    "dotenv": "^17.4.2",
+    "express": "^4.18.3",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

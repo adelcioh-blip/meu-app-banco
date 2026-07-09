@@ -1,152 +1,150 @@
 'use strict';
 
-// Usa o módulo SQLite nativo do Node.js 22+ (node:sqlite)
-// Sem dependência externa, sem compilação nativa.
-const { DatabaseSync } = require('node:sqlite');
-const path = require('node:path');
+const { Pool } = require('pg');
 const fs   = require('node:fs');
+const path = require('node:path');
 
-const DB_PATH  = path.join(__dirname, '../../data/licitacoes.db');
 const SQL_PATH = path.join(__dirname, 'schema.sql');
 
-let _db = null;
+let _pool = null;
 
-function getDb() {
-  if (_db) return _db;
+function getPool() {
+  if (_pool) return _pool;
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não definida');
+  _pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL.includes('localhost')
+      ? false
+      : { rejectUnauthorized: false },
+  });
+  return _pool;
+}
 
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  _db = new DatabaseSync(DB_PATH);
-  _db.exec('PRAGMA journal_mode = WAL');
-  _db.exec('PRAGMA foreign_keys = ON');
-
+async function initDb() {
   const schema = fs.readFileSync(SQL_PATH, 'utf8');
-  _db.exec(schema);
-
-  return _db;
+  await getPool().query(schema);
 }
 
 // ── Licitações ────────────────────────────────────────────────────────────────
 
-function upsertLicitacao(item) {
-  const db   = getDb();
-  const stmt = db.prepare(`
-    INSERT OR IGNORE INTO licitacoes
+async function upsertLicitacao(item) {
+  const res = await getPool().query(`
+    INSERT INTO licitacoes
       (cnpj_orgao, ano, sequencial, orgao_nome, municipio, uf,
        objeto, modalidade, situacao,
        data_publicacao, data_inicio, data_fim, valor_global, link,
        grupo_match, dam_exclusivo, formas_emissao, classificacao, justificativa)
-    VALUES
-      ($cnpj_orgao, $ano, $sequencial, $orgao_nome, $municipio, $uf,
-       $objeto, $modalidade, $situacao,
-       $data_publicacao, $data_inicio, $data_fim, $valor_global, $link,
-       $grupo_match, $dam_exclusivo, $formas_emissao, $classificacao, $justificativa)
-  `);
-
-  const info = stmt.run({
-    $cnpj_orgao:     item.cnpj_orgao     ?? null,
-    $ano:            item.ano            ?? null,
-    $sequencial:     item.sequencial     ?? null,
-    $orgao_nome:     item.orgao_nome     ?? null,
-    $municipio:      item.municipio      ?? null,
-    $uf:             item.uf             ?? null,
-    $objeto:         item.objeto         ?? null,
-    $modalidade:     item.modalidade     ?? null,
-    $situacao:       item.situacao       ?? null,
-    $data_publicacao:item.data_publicacao?? null,
-    $data_inicio:    item.data_inicio    ?? null,
-    $data_fim:       item.data_fim       ?? null,
-    $valor_global:   item.valor_global   ?? null,
-    $link:           item.link           ?? null,
-    $grupo_match:    item.grupo_match    ?? null,
-    $dam_exclusivo:  item.dam_exclusivo  ?? null,
-    $formas_emissao: item.formas_emissao ?? null,
-    $classificacao:  item.classificacao  ?? null,
-    $justificativa:  item.justificativa  ?? null,
-  });
-
-  return { inserted: info.changes === 1 };
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+    ON CONFLICT (cnpj_orgao, ano, sequencial) DO NOTHING
+  `, [
+    item.cnpj_orgao     ?? null,
+    item.ano            ?? null,
+    item.sequencial     ?? null,
+    item.orgao_nome     ?? null,
+    item.municipio      ?? null,
+    item.uf             ?? null,
+    item.objeto         ?? null,
+    item.modalidade     ?? null,
+    item.situacao       ?? null,
+    item.data_publicacao?? null,
+    item.data_inicio    ?? null,
+    item.data_fim       ?? null,
+    item.valor_global   ?? null,
+    item.link           ?? null,
+    item.grupo_match    ?? null,
+    item.dam_exclusivo  ?? null,
+    item.formas_emissao ?? null,
+    item.classificacao  ?? null,
+    item.justificativa  ?? null,
+  ]);
+  return { inserted: res.rowCount === 1 };
 }
 
-function buscar({ uf, classificacao, grupo, dataIni, dataFim, valorMin, q, limit = 50, offset = 0 } = {}) {
-  const db    = getDb();
+async function buscar({ uf, classificacao, grupo, dataIni, dataFim, valorMin, q, limit = 50, offset = 0 } = {}) {
   const where = [];
-  const params = {};
+  const params = [];
+  let i = 1;
 
-  if (uf)            { where.push('uf = $uf');                            params.$uf = uf.toUpperCase(); }
-  if (classificacao) { where.push('classificacao = $classificacao');      params.$classificacao = classificacao; }
-  if (grupo)         { where.push('grupo_match = $grupo');                params.$grupo = grupo; }
-  if (dataIni)       { where.push('data_publicacao >= $dataIni');         params.$dataIni = dataIni; }
-  if (dataFim)       { where.push('data_publicacao <= $dataFim');         params.$dataFim = dataFim; }
-  if (valorMin > 0)  { where.push('valor_global >= $valorMin');           params.$valorMin = valorMin; }
-  if (q)             { where.push('objeto LIKE $q');                      params.$q = `%${q}%`; }
+  if (uf)            { where.push(`uf = $${i++}`);               params.push(uf.toUpperCase()); }
+  if (classificacao) { where.push(`classificacao = $${i++}`);    params.push(classificacao); }
+  if (grupo)         { where.push(`grupo_match = $${i++}`);      params.push(grupo); }
+  if (dataIni)       { where.push(`data_publicacao >= $${i++}`); params.push(dataIni); }
+  if (dataFim)       { where.push(`data_publicacao <= $${i++}`); params.push(dataFim); }
+  if (valorMin > 0)  { where.push(`valor_global >= $${i++}`);    params.push(valorMin); }
+  if (q)             { where.push(`objeto ILIKE $${i++}`);       params.push(`%${q}%`); }
 
-  const cond = where.length ? 'WHERE ' + where.join(' AND ') : '';
-  const sql  = `SELECT * FROM licitacoes ${cond} ORDER BY data_publicacao DESC LIMIT $limit OFFSET $offset`;
+  const cond   = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const limIdx = i++;
+  const offIdx = i++;
+  params.push(limit, offset);
 
-  return db.prepare(sql).all({ ...params, $limit: limit, $offset: offset });
+  const sql = `SELECT * FROM licitacoes ${cond} ORDER BY data_publicacao DESC LIMIT $${limIdx} OFFSET $${offIdx}`;
+  const res = await getPool().query(sql, params);
+  return res.rows;
 }
 
-function buscarPorId(id) {
-  return getDb().prepare('SELECT * FROM licitacoes WHERE id = $id').get({ $id: id });
+async function buscarPorId(id) {
+  const res = await getPool().query('SELECT * FROM licitacoes WHERE id = $1', [id]);
+  return res.rows[0] || null;
 }
 
-function stats() {
-  const db = getDb();
+async function stats() {
+  const pool = getPool();
 
-  const totais = db.prepare(`
+  const totRow = (await pool.query(`
     SELECT
-      COUNT(*)                                              AS total,
-      SUM(CASE WHEN classificacao = 'GREEN'   THEN 1 ELSE 0 END) AS green,
-      SUM(CASE WHEN classificacao = 'RED'     THEN 1 ELSE 0 END) AS red,
-      SUM(CASE WHEN classificacao = 'REVISAR' THEN 1 ELSE 0 END) AS revisar,
-      SUM(CASE WHEN classificacao IS NULL     THEN 1 ELSE 0 END) AS sem_classificacao,
-      SUM(CASE WHEN grupo_match = 'A'         THEN 1 ELSE 0 END) AS grupo_a,
-      SUM(CASE WHEN grupo_match = 'B'         THEN 1 ELSE 0 END) AS grupo_b
+      COUNT(*)::INTEGER                                                          AS total,
+      SUM(CASE WHEN classificacao = 'GREEN'   THEN 1 ELSE 0 END)::INTEGER AS green,
+      SUM(CASE WHEN classificacao = 'RED'     THEN 1 ELSE 0 END)::INTEGER AS red,
+      SUM(CASE WHEN classificacao = 'REVISAR' THEN 1 ELSE 0 END)::INTEGER AS revisar,
+      SUM(CASE WHEN classificacao IS NULL     THEN 1 ELSE 0 END)::INTEGER AS sem_classificacao,
+      SUM(CASE WHEN grupo_match = 'A'         THEN 1 ELSE 0 END)::INTEGER AS grupo_a,
+      SUM(CASE WHEN grupo_match = 'B'         THEN 1 ELSE 0 END)::INTEGER AS grupo_b
     FROM licitacoes
-  `).get({});
+  `)).rows[0];
 
-  const por_uf = db.prepare(`
-    SELECT uf, COUNT(*) AS total
+  const por_uf = (await pool.query(`
+    SELECT uf, COUNT(*)::INTEGER AS total
     FROM licitacoes
     WHERE uf IS NOT NULL
     GROUP BY uf
     ORDER BY total DESC
     LIMIT 30
-  `).all({});
+  `)).rows;
 
-  return { totais, por_uf };
+  return { totais: totRow, por_uf };
 }
 
 // ── Varreduras ────────────────────────────────────────────────────────────────
 
-function salvarVarredura(log) {
-  const db   = getDb();
-  const info = db.prepare(`
+async function salvarVarredura(log) {
+  const res = await getPool().query(`
     INSERT INTO varreduras
       (modo, uf, data_ini, data_fim, query_fulltext,
        total_api, total_relevantes, total_inseridas, total_duplicatas, erros)
-    VALUES
-      ($modo, $uf, $data_ini, $data_fim, $query_fulltext,
-       $total_api, $total_relevantes, $total_inseridas, $total_duplicatas, $erros)
-  `).run({
-    $modo:             log.modo             ?? null,
-    $uf:               log.uf               ?? null,
-    $data_ini:         log.data_ini         ?? null,
-    $data_fim:         log.data_fim         ?? null,
-    $query_fulltext:   log.query_fulltext   ?? null,
-    $total_api:        log.total_api        ?? 0,
-    $total_relevantes: log.total_relevantes ?? 0,
-    $total_inseridas:  log.total_inseridas  ?? 0,
-    $total_duplicatas: log.total_duplicatas ?? 0,
-    $erros:            JSON.stringify(log.erros || []),
-  });
-  return info.lastInsertRowid;
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    RETURNING id
+  `, [
+    log.modo             ?? null,
+    log.uf               ?? null,
+    log.data_ini         ?? null,
+    log.data_fim         ?? null,
+    log.query_fulltext   ?? null,
+    log.total_api        ?? 0,
+    log.total_relevantes ?? 0,
+    log.total_inseridas  ?? 0,
+    log.total_duplicatas ?? 0,
+    JSON.stringify(log.erros || []),
+  ]);
+  return res.rows[0].id;
 }
 
-function listarVarreduras(limit = 20) {
-  return getDb()
-    .prepare('SELECT * FROM varreduras ORDER BY created_at DESC LIMIT $limit')
-    .all({ $limit: limit });
+async function listarVarreduras(limit = 20) {
+  const res = await getPool().query(
+    'SELECT * FROM varreduras ORDER BY created_at DESC LIMIT $1',
+    [limit]
+  );
+  return res.rows;
 }
 
-module.exports = { getDb, upsertLicitacao, buscar, buscarPorId, stats, salvarVarredura, listarVarreduras };
+module.exports = { getPool, initDb, upsertLicitacao, buscar, buscarPorId, stats, salvarVarredura, listarVarreduras };

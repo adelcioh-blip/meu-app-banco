@@ -1,39 +1,41 @@
 'use strict';
 
+// Carrega .env em desenvolvimento (sem efeito em produção se a variável já existir)
+require('dotenv').config();
+
 const express = require('express');
-const { getDb } = require('../db/database');
+const path    = require('node:path');
+const fs      = require('node:fs');
+const { initDb } = require('../db/database');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Inicializa o banco na subida do servidor
-getDb();
-
-// Rotas
+// API
 app.use('/api/licitacoes', require('./routes/licitacoes'));
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
-// Saúde
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', ts: new Date().toISOString() });
-});
+// Frontend estático (produção — após npm run build no client/)
+const clientDist = path.join(__dirname, '../../client/dist');
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  // Catch-all para React Router (SPA)
+  app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+}
 
-// 404 para rotas desconhecidas
 app.use((_req, res) => res.status(404).json({ erro: 'Rota não encontrada' }));
 
-// Timeout de 120s para varreduras síncronas
-const server = app.listen(PORT, () => {
-  console.log(`Radar de Licitações rodando em http://localhost:${PORT}`);
-  console.log('Endpoints disponíveis:');
-  console.log('  GET  /api/health');
-  console.log('  GET  /api/licitacoes');
-  console.log('  GET  /api/licitacoes/:id');
-  console.log('  GET  /api/licitacoes/meta/stats');
-  console.log('  GET  /api/licitacoes/meta/varreduras');
-  console.log('  POST /api/licitacoes/varredura');
-});
+async function start() {
+  await initDb();
 
-server.timeout = 300_000; // varredura com 7 modalidades + delays leva ~2-3min
+  const server = app.listen(PORT, () => {
+    console.log(`Radar de Licitações rodando em http://localhost:${PORT}`);
+  });
+  server.timeout = 300_000;
+}
+
+start().catch(err => { console.error('Falha ao iniciar:', err.message); process.exit(1); });
 
 module.exports = app;

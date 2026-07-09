@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: radar-licitacoes
+    runtime: node
+    buildCommand: npm install && npm install --prefix client && npm run build --prefix client
+    startCommand: node src/api/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: radar-licitacoes-db
+          property: connectionString
+
+databases:
+  - name: radar-licitacoes-db
+    plan: free
