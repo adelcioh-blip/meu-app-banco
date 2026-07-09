@@ -34,6 +34,6 @@ const server = app.listen(PORT, () => {
   console.log('  POST /api/licitacoes/varredura');
 });
 
-server.timeout = 120_000;
+server.timeout = 300_000; // varredura com 7 modalidades + delays leva ~2-3min
 
 module.exports = app;

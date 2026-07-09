@@ -165,9 +165,10 @@ async function varrerEstruturado({ dataIni, dataFim, uf, modalidades, maxPaginas
 
   for (let mi = 0; mi < mods.length; mi++) {
     const modalidade = mods[mi];
-    if (mi > 0) await sleep(1500); // evita rate limiting (429) entre modalidades
+    if (mi > 0) await sleep(3000); // evita rate limiting (429) entre modalidades
 
     for (let pagina = 1; pagina <= maxPaginas; pagina++) {
+      if (pagina > 1) await sleep(500);
       if (onProgress) onProgress({ pagina, maxPaginas, modalidade, modo: 'estruturado' });
 
       const params = {
