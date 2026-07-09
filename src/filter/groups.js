@@ -16,6 +16,7 @@ const GRUPO_A = [
   'instituição arrecadadora',
   'banco arrecadador',
   'cobrança de tributos',
+  'recolhimento de tributos',
   'gestão de receitas municipais',
   'plataforma de pagamento',
 ];
@@ -29,6 +30,8 @@ const GRUPO_B_REGEX = [/\biptu\b/, /\biss\b/, /\bitbi\b/];
 
 // Frases mais longas — substring match seguro após normalização
 const GRUPO_B_FRASES = [
+  'servicos bancarios',
+  'serviços bancários',
   'taxas municipais',
   'contribuição de melhoria',
   'contribuicao de melhoria',

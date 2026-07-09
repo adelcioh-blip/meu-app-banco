@@ -8,7 +8,9 @@
     "dev": "nodemon src/api/server.js",
     "client": "npm run dev --prefix client",
     "validate-query": "node scripts/validate_pncp_query.js",
-    "test-filter": "node src/filter/relevance.js"
+    "test-filter": "node src/filter/relevance.js",
+    "historico": "node scripts/popular_historico.js",
+    "diaria": "node scripts/varredura_diaria.js"
   },
   "dependencies": {
     "express": "^4.18.3"
