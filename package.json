@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/api/server.js",
     "dev": "nodemon src/api/server.js",
+    "client": "npm run dev --prefix client",
     "validate-query": "node scripts/validate_pncp_query.js",
     "test-filter": "node src/filter/relevance.js"
   },
