@@ -27,6 +27,11 @@ const _HEADERS = {
 const CONSULTA_URL = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 const SEARCH_URL   = 'https://pncp.gov.br/api/search/';
 
+// Modalidades mais relevantes para o radar (codigoModalidadeContratacao tornou-se obrigatório)
+// 4=Concorrência Eletrônica, 5=Concorrência Presencial, 6=Pregão Eletrônico, 7=Pregão Presencial,
+// 8=Dispensa, 9=Inexigibilidade, 12=Credenciamento
+const MODALIDADES_PADRAO = [4, 5, 6, 7, 8, 9, 12];
+
 // ── HTTP com retry e backoff exponencial ──────────────────────────────────────
 function httpGet(url, retries = 4, timeoutMs = 60_000) {
   return new Promise((resolve) => {
@@ -146,7 +151,8 @@ function processarLote(raws) {
 }
 
 // ── Varredura: API estruturada /consulta ──────────────────────────────────────
-async function varrerEstruturado({ dataIni, dataFim, uf, maxPaginas = 10, tamPagina = 50, status, onProgress } = {}) {
+// codigoModalidadeContratacao tornou-se obrigatório na API — itera por modalidade
+async function varrerEstruturado({ dataIni, dataFim, uf, modalidades, maxPaginas = 10, tamPagina = 50, status, onProgress } = {}) {
   const log = {
     modo: 'estruturado', uf: uf || null,
     data_ini: dataIni, data_fim: dataFim, query_fulltext: null,
@@ -154,36 +160,49 @@ async function varrerEstruturado({ dataIni, dataFim, uf, maxPaginas = 10, tamPag
     erros: [],
   };
 
-  for (let pagina = 1; pagina <= maxPaginas; pagina++) {
-    if (onProgress) onProgress({ pagina, maxPaginas, modo: 'estruturado' });
+  const mods = (modalidades && modalidades.length) ? modalidades : MODALIDADES_PADRAO;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    const params = { dataInicial: dataIni, dataFinal: dataFim, pagina, tamanhoPagina: tamPagina };
-    if (uf) params.uf = uf;
+  for (let mi = 0; mi < mods.length; mi++) {
+    const modalidade = mods[mi];
+    if (mi > 0) await sleep(1500); // evita rate limiting (429) entre modalidades
 
-    const resp = await httpGet(buildUrl(CONSULTA_URL, params));
+    for (let pagina = 1; pagina <= maxPaginas; pagina++) {
+      if (onProgress) onProgress({ pagina, maxPaginas, modalidade, modo: 'estruturado' });
 
-    if (!resp)            { break; }
-    if (resp._erro)       { log.erros.push(`pág ${pagina}: ${resp._erro}`); break; }
+      const params = {
+        dataInicial: dataIni,
+        dataFinal: dataFim,
+        codigoModalidadeContratacao: modalidade,
+        pagina,
+        tamanhoPagina: tamPagina,
+      };
+      if (uf) params.uf = uf;
 
-    const raws       = resp.data || resp.items || [];
-    log.total_api    = resp.totalRegistros || resp.total || log.total_api;
-    const totalPags  = resp.totalPaginas || 0;
+      const resp = await httpGet(buildUrl(CONSULTA_URL, params));
 
-    if (!raws.length) break;
+      if (!resp)      { break; }
+      if (resp._erro) { log.erros.push(`mod${modalidade} pág${pagina}: ${resp._erro}`); break; }
 
-    // Filtro de status local (a API /consulta não tem filtro de status nativo)
-    const filtrados = status === 'recebendo_proposta'
-      ? raws.filter(r => /recebendo|aberto|ativo|publicado|vigente/i.test(
-          r.situacaoCompraNome || r.situacaoNome || ''))
-      : raws;
+      const raws      = resp.data || resp.items || [];
+      const totalPags = resp.totalPaginas || 0;
+      if (pagina === 1) log.total_api += resp.totalRegistros || resp.total || 0;
 
-    const { relevantes, inseridas, duplicatas } = processarLote(filtrados);
-    log.total_relevantes += relevantes;
-    log.total_inseridas  += inseridas;
-    log.total_duplicatas += duplicatas;
+      if (!raws.length) break;
 
-    if (totalPags && pagina >= totalPags) break;
-    if (raws.length < tamPagina)          break;
+      const filtrados = status === 'recebendo_proposta'
+        ? raws.filter(r => /recebendo|aberto|ativo|publicado|vigente/i.test(
+            r.situacaoCompraNome || r.situacaoNome || ''))
+        : raws;
+
+      const { relevantes, inseridas, duplicatas } = processarLote(filtrados);
+      log.total_relevantes += relevantes;
+      log.total_inseridas  += inseridas;
+      log.total_duplicatas += duplicatas;
+
+      if (totalPags && pagina >= totalPags) break;
+      if (raws.length < tamPagina)          break;
+    }
   }
 
   const varreduraId = salvarVarredura(log);
